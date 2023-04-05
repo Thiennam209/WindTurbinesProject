@@ -2,12 +2,16 @@ using Azure.Messaging.EventHubs.Consumer;
 using Microsoft.Azure.Devices;
 using Microsoft.Azure.Devices.Client;
 using Microsoft.Azure.Devices.Common.Exceptions;
+using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
 using System;
 using System.Collections.Generic;
+using System.Net.Http;
+using System.Net.Http.Headers;
 using System.Text;
-using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Text.Json;
 
 namespace DeviceSimulator
 {
@@ -17,7 +21,7 @@ namespace DeviceSimulator
         /// Please replace with correct connection string value
         /// The connection string could be got from Azure IoT Hub -> Shared access policies -> iothubowner -> Connection String:
         /// </summary>
-        private const string iotHubConnectionString = "HostName=adtwindHubkpku2rzpus.azure-devices.net;SharedAccessKeyName=iothubowner;SharedAccessKey=z//3iOupQPkcsQ47KqSnWdlgRAxFpjDgKfKK+fXY0NY=";
+        private const string iotHubConnectionString = "HostName=adtwindHubkpku2rzpus.azure-devices.net;SharedAccessKeyName=iothubowner;SharedAccessKey=qYZGNqJxx3NjkYB5fDYauti0/YfyrLMKade9X3Dwq5E=";
         private const string adtInstanceUrl = "https://adtwindadtkpku2rzpus.api.eus.digitaltwins.azure.net";
         private const string alertTurbineId = "T102";
         private const string alertVariableName = "Alert";
@@ -75,6 +79,42 @@ namespace DeviceSimulator
             }
         }
 
+        private static readonly HttpClient client = new HttpClient();
+
+        private static async Task GetStrapiToken()
+        {
+            client.DefaultRequestHeaders.Accept.Clear();
+            client.DefaultRequestHeaders.Accept.Add(
+        new MediaTypeWithQualityHeaderValue("application/vnd.github.v3+json"));
+            client.DefaultRequestHeaders.Add("User-Agent", ".NET Foundation Repository Reporter");
+
+            var jsonString = "{\"identifier\":\"thiennam209@gmail.com\",\"password\":\"Metaverse123@\" }";
+            var httpContent = new StringContent(jsonString, Encoding.UTF8, "application/json");
+
+            var token = await client.PostAsync("http://20.119.54.193:1337/api/auth/local", httpContent);
+            string json = await token.Content.ReadAsStringAsync();
+            var data = (JObject)JsonConvert.DeserializeObject(json);
+            string JWT = data["jwt"].Value<string>();
+
+            client.DefaultRequestHeaders.Authorization =
+        new AuthenticationHeaderValue("Bearer", JWT);
+        }
+
+        private static async Task<String> GetWindTurbineAlertTrigger()
+        {
+            var stringTask = client.GetStringAsync("http://20.119.54.193:1337/api/wind-turbine-alert-triggers/1");
+            var msg = await stringTask;
+
+            return msg;
+        }
+
+        private static void CancelWindTurbineAlertTrigger()
+        {
+            var jsonString = "{\"data\":{\"isCancelAlert\":\"false\"}}";
+            var httpContent = new StringContent(jsonString, Encoding.UTF8, "application/json");
+            var stringTask = client.PutAsync("http://20.119.54.193:1337/api/wind-turbine-alert-triggers/1", httpContent);
+        }
+
         public static async Task SendDeviceToCloudMessageAsync(CancellationToken cancelToken)
         {
             List<DeviceClient> deviceClients = new List<DeviceClient>();
@@ -84,10 +124,23 @@ namespace DeviceSimulator
                 deviceClients.Add(DeviceClient.CreateFromConnectionString(deviceConnectionString));
             }
 
+            await GetStrapiToken();
+
             List<TelemetryData> data = Telemetry.GetDataLines();
             int dataIterator = 0;
             while (!cancelToken.IsCancellationRequested)
             {
+                var WindTurbineAlertTrigger = await GetWindTurbineAlertTrigger();
+                var apiData = JObject.Parse(WindTurbineAlertTrigger)["data"]["attributes"];
+
+                string isCancelAlert = apiData["isCancelAlert"].ToString();
+
+                if (isCancelAlert == "True")
+                {
+                    await SendAlert(isCancelAlert);
+                    CancelWindTurbineAlertTrigger();
+                }
+
                 for (int i = 0; i < deviceClients.Count; i++)
                 {
                     Microsoft.Azure.Devices.Client.Message message = new Microsoft.Azure.Devices.Client.Message();
@@ -95,7 +148,6 @@ namespace DeviceSimulator
                     {
                         // This is sending a specified Alert message
                         message = ConstructTelemetryDataPoint(data[i + dataIterator], isAlert: true);
-                        alertSent = false;
                     }
                     else
                     {
@@ -145,7 +197,7 @@ namespace DeviceSimulator
                 Rotor = telData.rotorSpeed,
                 Power = telData.power
             };
-            var messageString = JsonSerializer.Serialize(payload);
+            var messageString = System.Text.Json.JsonSerializer.Serialize(payload);
             Console.ForegroundColor = ConsoleColor.Cyan;
             Console.WriteLine($"{DateTime.Now} > Sending message: {messageString}");
             return new Microsoft.Azure.Devices.Client.Message(Encoding.UTF8.GetBytes(messageString))
@@ -155,25 +207,48 @@ namespace DeviceSimulator
             };
         }
 
-        public static async Task SendAlert()
+        public static async Task SendAlert(string isCancelAlert)
         {
             try
             {
-                var payload = new
+                if (isCancelAlert != "True")
                 {
-                    TurbineID = alertTurbineId,
-                    Alert = !alertSent
-                };
-                var messageString = JsonSerializer.Serialize(payload);
-                var client = DeviceClient.CreateFromConnectionString(deviceConnectionStrings[alertIndex]);
-                var message = new Microsoft.Azure.Devices.Client.Message(Encoding.UTF8.GetBytes(messageString))
-                {
-                    ContentType = "application/json",
-                    ContentEncoding = "utf-8"
-                };
+                    var payload = new
+                    {
+                        TurbineID = alertTurbineId,
+                        Alert = !alertSent
+                    };
 
-                await client.SendEventAsync(message);
-                alertSent = true;
+                    var messageString = System.Text.Json.JsonSerializer.Serialize(payload);
+                    var client = DeviceClient.CreateFromConnectionString(deviceConnectionStrings[alertIndex]);
+                    var message = new Microsoft.Azure.Devices.Client.Message(Encoding.UTF8.GetBytes(messageString))
+                    {
+                        ContentType = "application/json",
+                        ContentEncoding = "utf-8"
+                    };
+
+                    await client.SendEventAsync(message);
+                    alertSent = !alertSent;
+                }
+                else
+                {
+                    var payload = new
+                    {
+                        TurbineID = alertTurbineId,
+                        Alert = false
+                    };
+
+                    var messageString = System.Text.Json.JsonSerializer.Serialize(payload);
+                    var client = DeviceClient.CreateFromConnectionString(deviceConnectionStrings[alertIndex]);
+                    var message = new Microsoft.Azure.Devices.Client.Message(Encoding.UTF8.GetBytes(messageString))
+                    {
+                        ContentType = "application/json",
+                        ContentEncoding = "utf-8"
+                    };
+
+                    await client.SendEventAsync(message);
+                    alertSent = false;
+                }
             }
             catch (Exception e)
             {

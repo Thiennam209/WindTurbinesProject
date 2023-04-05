@@ -13,9 +13,6 @@ az iot hub connection-string show --resource-group ${projectname}-rg >> Azure_co
 
 
 
-
-
-
 # Blade Infra 
 ## Required Installs
 Azure CLI version 2.20.0 or higher: https://docs.microsoft.com/en-us/cli/azure/install-azure-cli

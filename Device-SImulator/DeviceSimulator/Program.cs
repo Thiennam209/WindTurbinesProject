@@ -58,7 +58,7 @@ namespace DeviceSimulator
                 var keyEntered = Console.ReadKey().Key;
                 if(keyEntered == ConsoleKey.Spacebar)
                 {
-                    await AzureIoTHub.SendAlert();
+                    await AzureIoTHub.SendAlert("space");
                 }
                 Console.WriteLine();
             } while (!cancelToken.IsCancellationRequested);
